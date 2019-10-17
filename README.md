@@ -63,18 +63,16 @@ the console should display _SequelizeMigrations_  as one of the available plugin
 
 ## Setting up Sequelize
 
-For the plugin to work correctly, you have to set the database information as environment variables on the service provider section as follows:
+For the plugin to work correctly, you must provide the secret ARN from AWS Secrets Manager and the database name:
 ```
-provider:
-  environment:
-    DB_DIALECT: 'database_dialect' /* one of 'mysql' | 'mariadb' | 'postgres' | 'mssql' */
-    DB_NAME: 'database_name'
-    DB_USERNAME: 'database_username'
-    DB_PASSWORD: 'database_password'
-    DB_HOST: 'database_host'
-    DB_PORT: 'database_port'
+custom:
+  sequelize:
+    <stage_name>:
+      secretId: 'ARN of secret from AWS Secrets Manager'
+      dbName: 'database name'
 ```
 Replace the variables with the information of your own database.
+Note that you can add multiple stage names.
 
 Obs: This plugin does not have support to create the database itself.
 
@@ -131,6 +129,9 @@ The commands (those that have some option) and it's options are presented below:
 ```
 --status / -s ............ Specify the status of migrations to be listed (--status pending [default] or --status executed)
 ```
+
+### Serverless Deployment
+This plugin will run the `migration up` command before updating the AWS cloudformation stack if the stage being deployed to is configured
 
 ### Custom migrations path
 You can also define a migrations path variable on the custom section of your project service file.
