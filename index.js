@@ -2,11 +2,13 @@ const _ = require("lodash");
 const utils = require("./lib/utils");
 const MigrationsHandler = require("./handlers/migrationsHandler");
 const SequelizeCliHandler = require("./handlers/sequelizeCliHandler");
+const secretsManager = require('./lib/secretsmanager')
 
 class SequelizeMigrations {
   constructor(serverless, options) {
     this.serverless = serverless;
     this.options = options;
+    this.aws = this.serverless.getProvider('aws');
 
     this.commands = {
       migrations: {
@@ -89,7 +91,8 @@ class SequelizeMigrations {
       "migrations:down:run": this.revert.bind(this),
       "migrations:reset:run": this.reset.bind(this),
       "migrations:list:show": this.list.bind(this),
-      "migrations:create:run": this.createMigration.bind(this)
+      "migrations:create:run": this.createMigration.bind(this),
+      "before:aws:deploy:deploy:updateStack": () => this.serverless.pluginManager.run(['migrations', 'up']),
     };
 
     this.verbose = this.options.verbose || this.options.v;
@@ -103,21 +106,21 @@ class SequelizeMigrations {
     this.serverless.cli.generateCommandsHelp(["migrations"]);
   }
 
-  setUpDatabaseValues() {
-    utils.setEnvironment(this.serverless);
+  async setUpDatabaseValues(secretId, dbName) {
+    const dbSecret = await secretsManager.getSecret(this.aws, secretId)
 
     let error = false;
-    if (!process.env.DB_DIALECT) {
+    if (!dbSecret.engine) {
       error = "DB_DIALECT";
-    } else if (!process.env.DB_HOST) {
+    } else if (!dbSecret.host) {
       error = "DB_HOST";
-    } else if (!process.env.DB_PORT) {
+    } else if (!dbSecret.port) {
       error = "DB_PORT";
-    } else if (!process.env.DB_NAME) {
+    } else if (!dbName) {
       error = "DB_NAME";
-    } else if (!process.env.DB_USERNAME) {
+    } else if (!dbSecret.username) {
       error = "DB_USERNAME";
-    } else if (!process.env.DB_PASSWORD) {
+    } else if (!dbSecret.password) {
       error = "DB_PASSWORD";
     }
 
@@ -127,72 +130,106 @@ class SequelizeMigrations {
     }
 
     return {
-      DIALECT: process.env.DB_DIALECT,
-      HOST: process.env.DB_HOST,
-      PORT: process.env.DB_PORT,
-      NAME: process.env.DB_NAME,
-      USERNAME: process.env.DB_USERNAME,
-      PASSWORD: process.env.DB_PASSWORD
+      DIALECT: dbSecret.engine,
+      HOST: dbSecret.host,
+      PORT: dbSecret.port,
+      NAME: dbName,
+      USERNAME: dbSecret.username,
+      PASSWORD: dbSecret.password
     };
   }
 
-  setUpMigrationsHandler() {
-    const database = this.setUpDatabaseValues();
+  async setUpMigrationsHandler(stage) {
+    let secretId = this.serverless.service.custom.sequelize[stage].secretId
+    let dbName = this.serverless.service.custom.sequelize[stage].dbName
 
-    const migrationsHandler = new MigrationsHandler(
-      this.serverless,
-      database,
-      this.path,
-      this.verbose
-    );
+    let error = false;
+    if(!secretId) {
+      error = "secretId";
+    } else if(!dbName) {
+      error = "dbName";
+    }
+    if(error) {
+      this.serverless.cli.log(`Missing ${error} for stage: ${stage}`);
+      process.exit(1);
+    } else {
+      const database = await this.setUpDatabaseValues(secretId, dbName);
 
-    migrationsHandler.initialize();
+      const migrationsHandler = new MigrationsHandler(
+        this.serverless,
+        database,
+        this.path,
+        this.verbose
+      );
 
-    return migrationsHandler;
+      migrationsHandler.initialize();
+
+      return migrationsHandler;
+    }
   }
 
   async migrate() {
-    try {
-      const migrationsHandler = this.setUpMigrationsHandler();
-
-      const success = await migrationsHandler.migrate(this.options.rollback);
-      if (!success) process.exit(1);
-    } catch (e) {
-      this.serverless.cli.log(`Error trying to apply migrations: \n${e}`);
-      process.exit(1);
+    let stage = utils.getStage(this.serverless, this.options);
+    if(this.serverless.service.custom.sequelize && this.serverless.service.custom.sequelize[stage]) {
+      try {
+        const migrationsHandler = await this.setUpMigrationsHandler(stage);
+  
+        const success = await migrationsHandler.migrate(this.options.rollback);
+        if (!success) process.exit(1);
+      } catch (e) {
+        this.serverless.cli.log(`Error trying to apply migrations: \n${e}`);
+        process.exit(1);
+      }
+    } else {
+      this.serverless.cli.log(`Database credentials not configured for stage: ${stage}`);
     }
   }
 
   async revert() {
-    try {
-      const migrationsHandler = this.setUpMigrationsHandler();
-
-      await migrationsHandler.revert(this.options.times, this.options.name);
-    } catch (e) {
-      this.serverless.cli.log(`Error trying to rollback migrations: \n${e}`);
-      process.exit(1);
+    let stage = utils.getStage(this.serverless, this.options);
+    if(this.serverless.service.custom.sequelize && this.serverless.service.custom.sequelize[stage]) {
+      try {
+        const migrationsHandler = await this.setUpMigrationsHandler(stage);
+  
+        await migrationsHandler.revert(this.options.times, this.options.name);
+      } catch (e) {
+        this.serverless.cli.log(`Error trying to rollback migrations: \n${e}`);
+        process.exit(1);
+      }
+    } else {
+      this.serverless.cli.log(`Database credentials not configured for stage: ${stage}`);
     }
   }
 
   async reset() {
-    try {
-      const migrationsHandler = this.setUpMigrationsHandler();
-
-      await migrationsHandler.reset();
-    } catch (e) {
-      this.serverless.cli.log(`Error trying to revert all migrations: \n${e}`);
-      process.exit(1);
+    let stage = utils.getStage(this.serverless, this.options);
+    if(this.serverless.service.custom.sequelize && this.serverless.service.custom.sequelize[stage]) {
+      try {
+        const migrationsHandler = this.setUpMigrationsHandler(stage);
+  
+        await migrationsHandler.reset();
+      } catch (e) {
+        this.serverless.cli.log(`Error trying to revert all migrations: \n${e}`);
+        process.exit(1);
+      }
+    } else {
+      this.serverless.cli.log(`Database credentials not configured for stage: ${stage}`);
     }
   }
 
-  async list() {
-    try {
-      const migrationsHandler = this.setUpMigrationsHandler();
-
-      await migrationsHandler.list(this.options.status);
-    } catch (e) {
-      this.serverless.cli.log(`Error trying to list migrations: \n${e}`);
-      process.exit(1);
+  async list() {  
+    let stage = utils.getStage(this.serverless, this.options);
+    if(this.serverless.service.custom.sequelize && this.serverless.service.custom.sequelize[stage]) {
+      try {
+        const migrationsHandler = this.setUpMigrationsHandler(stage);
+  
+        await migrationsHandler.list(this.options.status);
+      } catch (e) {
+        this.serverless.cli.log(`Error trying to list migrations: \n${e}`);
+        process.exit(1);
+      }
+    } else {
+      this.serverless.cli.log(`Database credentials not configured for stage: ${stage}`);
     }
   }
 
@@ -201,13 +238,18 @@ class SequelizeMigrations {
   }
 
   createMigration() {
-    try {
-      const sequelizeCliHandler = this.setUpSequelizeCliHandler();
-
-      sequelizeCliHandler.createMigration(this.options.name);
-    } catch (e) {
-      this.serverless.cli.log(`Error trying to create migration: \n${e}`);
-      process.exit(1);
+    let stage = utils.getStage(this.serverless, this.options);
+    if(this.serverless.service.custom.sequelize && this.serverless.service.custom.sequelize[stage]) {
+      try {
+        const sequelizeCliHandler = this.setUpSequelizeCliHandler();
+  
+        sequelizeCliHandler.createMigration(this.options.name);
+      } catch (e) {
+        this.serverless.cli.log(`Error trying to create migration: \n${e}`);
+        process.exit(1);
+      }
+    } else {
+      this.serverless.cli.log(`Database credentials not configured for stage: ${stage}`);
     }
   }
 }

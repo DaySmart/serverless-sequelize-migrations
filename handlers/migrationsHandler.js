@@ -43,7 +43,8 @@ module.exports = class MigrationsHandler {
           this.sequelize.getQueryInterface(),
           this.sequelize.constructor
         ],
-        path: this.path
+        path: this.path,
+        pattern: /^\d+[\S-]+\.js$/
       }
     });
   }
